@@ -25,6 +25,8 @@ classifiers = [
 dependencies = [
     "pandas>=2.0.0",
     "openpyxl>=3.0.0",
+    "requests>=2.32.0",
+    "fastapi>=0.128.0",
 ]
 
 [project.optional-dependencies]
