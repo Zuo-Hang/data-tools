@@ -146,8 +146,8 @@ def ocr_get_image_by_url(url, timeout_conf=None):
     
     # 如果不是URL，先尝试作为本地文件路径处理
     if not is_url:
-        # 检查是否是本地文件路径
-        file_path = Path(url)
+    # 检查是否是本地文件路径
+    file_path = Path(url)
         # 尝试解析路径（处理相对路径和绝对路径）
         if not file_path.is_absolute():
             # 相对路径，尝试相对于当前工作目录
@@ -157,19 +157,19 @@ def ocr_get_image_by_url(url, timeout_conf=None):
             script_dir = Path(__file__).parent
             file_path = script_dir / url.lstrip('/')
         
-        if file_path.exists() and file_path.is_file():
-            # 本地文件路径，直接读取
-            try:
-                with open(file_path, 'rb') as f:
-                    content = f.read()
-                # 创建一个类似requests.Response的对象
-                class LocalFileResponse:
-                    def __init__(self, content):
-                        self.content = content
-                return LocalFileResponse(content)
-            except Exception as e:
-                logging.error("[didi_ocr]读取本地文件失败，path={}, error={}".format(url, e))
-                return None
+    if file_path.exists() and file_path.is_file():
+        # 本地文件路径，直接读取
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            # 创建一个类似requests.Response的对象
+            class LocalFileResponse:
+                def __init__(self, content):
+                    self.content = content
+            return LocalFileResponse(content)
+        except Exception as e:
+            logging.error("[didi_ocr]读取本地文件失败，path={}, error={}".format(url, e))
+            return None
     
     # URL路径，使用requests获取
     if timeout_conf is None or len(timeout_conf) <= 0:
