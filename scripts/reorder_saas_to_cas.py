@@ -152,25 +152,70 @@ def build_index_mapping() -> List[int]:
     return indices
 
 
-def reorder_line(line: str, indices: List[int]) -> str:
+def reorder_line(line: str, indices: List[int], field_to_index: dict) -> str:
     """
     将一行按照给定索引顺序重排字段。
+    使用字段名到索引的映射，确保每一行都能正确映射所有字段。
+    先映射 TARGET_ORDER 中的字段，然后追加原始数据中不在 TARGET_ORDER 中的其他字段。
 
     Args:
         line: 原始行（以制表符分隔）
         indices: 目标字段在原始字段中的索引列表
+        field_to_index: 字段名到原始数据索引的映射字典
 
     Returns:
         重排后的行（以逗号分隔的 CSV 行）
     """
     cols = line.rstrip("\n").split("\t")
-    # 不足字段用空字符串补齐，超出部分保留在原始行中但不会出现在输出里
-    if len(cols) < len(ORIGINAL_FIELDS):
-        cols.extend([""] * (len(ORIGINAL_FIELDS) - len(cols)))
-
-    reordered = [cols[i] if i < len(cols) else "" for i in indices]
-    # 简单 CSV：使用逗号分隔，不做额外转义（原始字段中当前没有逗号）
-    return ",".join(reordered)
+    original_cols_count = len(cols)
+    
+    # 构建字段名到实际值的映射（基于原始数据的实际字段数）
+    # 如果原始数据字段数少于 ORIGINAL_FIELDS，只映射实际存在的字段
+    field_values = {}
+    for idx, field_name in enumerate(ORIGINAL_FIELDS):
+        if idx < original_cols_count:
+            field_values[field_name] = cols[idx]
+        else:
+            field_values[field_name] = ""
+    
+    # 按照 TARGET_ORDER 的顺序，从 field_values 中获取值
+    reordered = []
+    for field_name in TARGET_ORDER:
+        if field_name in field_values:
+            value = field_values[field_name]
+        else:
+            # 如果字段不在映射中，使用空字符串
+            value = ""
+        reordered.append(value)
+    
+    # 追加原始数据中不在 TARGET_ORDER 中的其他字段
+    # 这些字段按照它们在 ORIGINAL_FIELDS 中的顺序追加
+    target_field_set = set(TARGET_ORDER)
+    for idx, field_name in enumerate(ORIGINAL_FIELDS):
+        if field_name not in target_field_set:
+            # 这个字段不在 TARGET_ORDER 中，需要追加
+            if idx < original_cols_count:
+                reordered.append(cols[idx])
+            else:
+                reordered.append("")
+    
+    # 如果原始数据中有超出 ORIGINAL_FIELDS 定义的字段，也追加它们
+    if original_cols_count > len(ORIGINAL_FIELDS):
+        for idx in range(len(ORIGINAL_FIELDS), original_cols_count):
+            reordered.append(cols[idx])
+    
+    # 简单 CSV：使用逗号分隔，需要处理字段中的逗号和引号
+    # 如果字段包含逗号、引号或换行符，需要用引号括起来，并转义引号
+    csv_cols = []
+    for col in reordered:
+        if ',' in col or '"' in col or '\n' in col or '\r' in col:
+            # 转义引号：将 " 替换为 ""
+            escaped = col.replace('"', '""')
+            csv_cols.append(f'"{escaped}"')
+        else:
+            csv_cols.append(col)
+    
+    return ",".join(csv_cols)
 
 
 def convert_file(input_path: Path, output_path: Path) -> None:
@@ -181,22 +226,32 @@ def convert_file(input_path: Path, output_path: Path) -> None:
         raise FileNotFoundError(f"输入文件不存在: {input_path}")
 
     indices = build_index_mapping()
+    # 构建字段名到索引的映射，用于每行数据映射
+    field_to_index = {name: idx for idx, name in enumerate(ORIGINAL_FIELDS)}
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     line_count = 0
+    # 构建完整的表头：TARGET_ORDER 中的字段 + 不在 TARGET_ORDER 中的其他字段
+    target_field_set = set(TARGET_ORDER)
+    additional_fields = []
+    for field_name in ORIGINAL_FIELDS:
+        if field_name not in target_field_set:
+            additional_fields.append(field_name)
+    full_header = TARGET_ORDER + additional_fields
+    
     with input_path.open("r", encoding="utf-8") as fin, output_path.open(
         "w", encoding="utf-8"
     ) as fout:
-        # 写入表头（按目标字段顺序）
-        header = ",".join(TARGET_ORDER)
+        # 写入表头（按目标字段顺序 + 其他字段）
+        header = ",".join(full_header)
         fout.write(header + "\n")
 
         for line in fin:
             # 跳过空行
             if not line.strip():
                 continue
-            reordered = reorder_line(line, indices)
+            reordered = reorder_line(line, indices, field_to_index)
             fout.write(reordered + "\n")
             line_count += 1
 

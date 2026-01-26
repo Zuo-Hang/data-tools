@@ -27,6 +27,7 @@ dependencies = [
     "openpyxl>=3.0.0",
     "requests>=2.32.0",
     "fastapi>=0.128.0",
+    "redis>=7.0.0",
 ]
 
 [project.optional-dependencies]
