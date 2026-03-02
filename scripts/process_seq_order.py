@@ -5,15 +5,19 @@
 PySpark 任务：
 1. 读取指定 HDFS 目录下的所有 .gz 文本文件（每行一个 JSON）。
 2. 解析每行 JSON，对 fieldvalues 字段进行过滤：
-   - 仅保留以 'seq_order' 开头的字符串
+   - 仅保留以 'merge_field' 开头的字符串
    - 在 fieldvalues 内部去重，保持原有顺序
 3. 其他字段保持不变。
 4. 将处理后的 JSON 行写入新的 HDFS 目录：
    - 如未显式指定 output-dir，则将 input-dir 中的 'data_backup' 替换为 'data'。
+5. 将 Spark 输出的 part-*-uuid-c000.txt.gz 重命名为 part-00000.gz 格式，
+   与 data_backup 中的 part-00199.gz 命名方式对齐。
 """
 
 import argparse
 import json
+import re
+import subprocess
 from typing import Optional
 
 from pyspark.sql import SparkSession
@@ -29,7 +33,7 @@ DEFAULT_INPUT_DIR = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="过滤 JSON fieldvalues 中的 seq_order* 字符串并写回 HDFS"
+        description="过滤 JSON fieldvalues 中的 merge_field* 字符串并写回 HDFS"
     )
     parser.add_argument(
         "--input-dir",
@@ -49,11 +53,48 @@ def build_output_dir(input_dir: str, output_dir: Optional[str]) -> str:
     return input_dir.replace("data_backup", "data")
 
 
+def rename_output_to_legacy_format(output_dir: str) -> None:
+    """
+    将 Spark 输出的 part-*-uuid-c000.txt.gz 重命名为 part-*.gz，
+    与 data_backup 中的 part-00199.gz 格式对齐。
+    """
+    # hdfs dfs -ls 可能返回带 hdfs:// 的路径，需统一处理
+    result = subprocess.run(
+        ["hdfs", "dfs", "-ls", output_dir],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    if result.returncode != 0:
+        return
+
+    files_to_rename = []
+    for line in result.stdout.strip().split("\n"):
+        if not line or line.startswith("Found"):
+            continue
+        parts = line.split()
+        if len(parts) < 8:
+            continue
+        path = parts[-1]
+        # 匹配 part-00000-uuid-c000.txt.gz 或 part-00000.txt.gz
+        match = re.search(r"part-(\d+)(?:-[a-f0-9-]+-c\d+)?\.txt\.gz$", path)
+        if match:
+            num = match.group(1).zfill(5)  # 补零为 5 位，与 part-00199.gz 格式一致
+            dir_part = path.rsplit("/", 1)[0]
+            new_path = f"{dir_part}/part-{num}.gz"
+            if path != new_path:
+                files_to_rename.append((path, new_path))
+
+    files_to_rename.sort(key=lambda x: x[1])
+    for old_path, new_path in files_to_rename:
+        subprocess.run(["hdfs", "dfs", "-mv", old_path, new_path], check=True)
+
+
 def filter_fieldvalues(line: str) -> str:
     """
     对一行 JSON 文本做处理：
     - 解析 JSON
-    - 只保留 fieldvalues 中以 'seq_order' 开头的字符串
+    - 只保留 fieldvalues 中以 'merge_field' 开头的字符串
     - 在 fieldvalues 内部做去重，保持原有顺序
     - 其它字段保持不变
     解析失败则原样返回，避免任务整体失败。
@@ -70,7 +111,7 @@ def filter_fieldvalues(line: str) -> str:
         seen = set()
         new_vals = []
         for v in fv:
-            if isinstance(v, str) and v.startswith("seq_order"):
+            if isinstance(v, str) and v.startswith("merge_field"):
                 if v not in seen:
                     seen.add(v)
                     new_vals.append(v)
@@ -113,6 +154,9 @@ def main() -> None:
         .option("compression", "gzip")
         .text(output_dir)
     )
+
+    # 5. 将 Spark 输出的 part-*-uuid-c000.txt.gz 重命名为 part-*.gz，与 data_backup 格式对齐
+    rename_output_to_legacy_format(output_dir)
 
     spark.stop()
 
