@@ -5,7 +5,7 @@
 PySpark 任务：
 1. 读取指定 HDFS 目录下的所有 .gz 文本文件（每行一个 JSON）。
 2. 解析每行 JSON，对 fieldvalues 字段进行过滤：
-   - 仅保留以 'merge_field' 开头的字符串
+   - 仅保留以 'merge_field\t' 开头的字符串
    - 在 fieldvalues 内部去重，保持原有顺序
 3. 其他字段保持不变。
 4. 将处理后的 JSON 行写入新的 HDFS 目录：
@@ -17,7 +17,6 @@ PySpark 任务：
 import argparse
 import json
 import re
-import subprocess
 from typing import Optional
 
 from pyspark.sql import SparkSession
@@ -48,53 +47,69 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_output_dir(input_dir: str, output_dir: Optional[str]) -> str:
+    """推断或校验输出目录，避免覆盖输入。"""
     if output_dir:
+        out = output_dir.rstrip("/")
+        inp = input_dir.rstrip("/")
+        if out == inp:
+            raise ValueError(
+                "输入输出目录相同，将覆盖输入数据。请指定不同的 --output-dir"
+            )
         return output_dir
-    return input_dir.replace("data_backup", "data")
+    # 仅当路径中包含 data_backup 段时替换，避免误替换（如 data_backup_backup）
+    parts = input_dir.rstrip("/").split("/")
+    if "data_backup" not in parts:
+        raise ValueError(
+            "无法推断输出目录：input-dir 路径中未包含 data_backup 段，请显式指定 --output-dir"
+        )
+    idx = parts.index("data_backup")
+    parts[idx] = "data"
+    return "/".join(parts)
 
 
-def rename_output_to_legacy_format(output_dir: str) -> None:
+def rename_output_to_legacy_format(spark: SparkSession, output_dir: str) -> None:
     """
     将 Spark 输出的 part-*-uuid-c000.txt.gz 重命名为 part-*.gz，
     与 data_backup 中的 part-00199.gz 格式对齐。
+    使用 Spark 内置的 Hadoop FileSystem API，不依赖 hdfs 命令行（YARN 容器中可能无 hdfs）。
     """
-    # hdfs dfs -ls 可能返回带 hdfs:// 的路径，需统一处理
-    result = subprocess.run(
-        ["hdfs", "dfs", "-ls", output_dir],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-    )
-    if result.returncode != 0:
+    jvm = spark.sparkContext._jvm
+    Path = jvm.org.apache.hadoop.fs.Path
+    FileSystem = jvm.org.apache.hadoop.fs.FileSystem
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+
+    uri = jvm.java.net.URI(output_dir)
+    fs = FileSystem.get(uri, conf)
+    path = Path(output_dir)
+
+    try:
+        statuses = fs.listStatus(path)
+    except Exception:
         return
 
     files_to_rename = []
-    for line in result.stdout.strip().split("\n"):
-        if not line or line.startswith("Found"):
-            continue
-        parts = line.split()
-        if len(parts) < 8:
-            continue
-        path = parts[-1]
-        # 匹配 part-00000-uuid-c000.txt.gz 或 part-00000.txt.gz
-        match = re.search(r"part-(\d+)(?:-[a-f0-9-]+-c\d+)?\.txt\.gz$", path)
+    for status in statuses:
+        p = status.getPath()
+        name = p.getName()
+        match = re.search(r"part-(\d+)(?:-[a-fA-F0-9-]+-c\d+)?\.txt\.gz$", name)
         if match:
-            num = match.group(1).zfill(5)  # 补零为 5 位，与 part-00199.gz 格式一致
-            dir_part = path.rsplit("/", 1)[0]
-            new_path = f"{dir_part}/part-{num}.gz"
-            if path != new_path:
-                files_to_rename.append((path, new_path))
+            num = match.group(1).zfill(5)
+            parent = str(p.getParent())
+            new_path = f"{parent}/part-{num}.gz"
+            old_path = str(p)
+            if old_path != new_path:
+                files_to_rename.append((old_path, new_path))
 
     files_to_rename.sort(key=lambda x: x[1])
     for old_path, new_path in files_to_rename:
-        subprocess.run(["hdfs", "dfs", "-mv", old_path, new_path], check=True)
+        fs.rename(Path(old_path), Path(new_path))
 
 
 def filter_fieldvalues(line: str) -> str:
     """
     对一行 JSON 文本做处理：
     - 解析 JSON
-    - 只保留 fieldvalues 中以 'merge_field' 开头的字符串
+    - 只保留 fieldvalues 中以 'merge_field\t' 开头的字符串
     - 在 fieldvalues 内部做去重，保持原有顺序
     - 其它字段保持不变
     解析失败则原样返回，避免任务整体失败。
@@ -111,7 +126,7 @@ def filter_fieldvalues(line: str) -> str:
         seen = set()
         new_vals = []
         for v in fv:
-            if isinstance(v, str) and v.startswith("merge_field"):
+            if isinstance(v, str) and v.startswith("merge_field\t"):
                 if v not in seen:
                     seen.add(v)
                     new_vals.append(v)
@@ -156,7 +171,7 @@ def main() -> None:
     )
 
     # 5. 将 Spark 输出的 part-*-uuid-c000.txt.gz 重命名为 part-*.gz，与 data_backup 格式对齐
-    rename_output_to_legacy_format(output_dir)
+    rename_output_to_legacy_format(spark, output_dir)
 
     spark.stop()
 

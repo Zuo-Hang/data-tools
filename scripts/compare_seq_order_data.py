@@ -57,7 +57,7 @@ def parse_line_to_key_and_merge_fields(
     line: str, key_field: str = "key"
 ) -> Optional[Tuple[str, List[str]]]:
     """
-    解析一行 JSON，提取 key 和 fieldvalues 中以 merge_field 开头的字符串列表。
+    解析一行 JSON，提取 key 和 fieldvalues 中以 merge_field\t 开头的字符串列表。
     与 process_seq_order 一致：去重且保持原有顺序。
     解析失败返回 None。
     """
@@ -77,7 +77,7 @@ def parse_line_to_key_and_merge_fields(
     seen = set()
     if isinstance(fv, list):
         for v in fv:
-            if isinstance(v, str) and v.startswith("merge_field"):
+            if isinstance(v, str) and v.startswith("merge_field\t"):
                 if v in seen:
                     continue
                 seen.add(v)
@@ -119,8 +119,22 @@ def main() -> None:
     df_backup = spark.createDataFrame(backup_rows, schema)
     df_data = spark.createDataFrame(data_rows, schema)
 
+    # 解析失败统计
+    cnt_backup_fail = df_backup.filter(F.col("key") == "__parse_fail__").count()
+    cnt_data_fail = df_data.filter(F.col("key") == "__parse_fail__").count()
+
     df_backup = df_backup.filter(F.col("key") != "__parse_fail__")
     df_data = df_data.filter(F.col("key") != "__parse_fail__")
+
+    # key 去重，避免 join 产生笛卡尔积
+    orig_backup = df_backup.count()
+    orig_data = df_data.count()
+    df_backup = df_backup.dropDuplicates(["key"])
+    df_data = df_data.dropDuplicates(["key"])
+    cnt_backup = df_backup.count()
+    cnt_data = df_data.count()
+    dup_backup = orig_backup - cnt_backup
+    dup_data = orig_data - cnt_data
 
     # 3. 行数比对
     cnt_backup = df_backup.count()
@@ -129,8 +143,12 @@ def main() -> None:
     print("=" * 60)
     print("行数比对")
     print("=" * 60)
-    print(f"data_backup 行数: {cnt_backup}")
-    print(f"data 行数: {cnt_data}")
+    if cnt_backup_fail > 0 or cnt_data_fail > 0:
+        print(f"解析失败行数: data_backup={cnt_backup_fail}, data={cnt_data_fail}")
+    if dup_backup > 0 or dup_data > 0:
+        print(f"重复 key 已去重: data_backup 丢弃 {dup_backup} 行, data 丢弃 {dup_data} 行")
+    print(f"data_backup 有效行数: {cnt_backup}")
+    print(f"data 有效行数: {cnt_data}")
     print(f"行数差异: {cnt_data - cnt_backup}")
     print()
 
@@ -151,6 +169,7 @@ def main() -> None:
     )
     joined = joined.withColumn("backup_str", fields_to_str_udf("backup_merge_fields"))
     joined = joined.withColumn("data_str", fields_to_str_udf("data_merge_fields"))
+    joined = joined.cache()  # 避免后续多次 count 重复扫描
 
     only_in_backup = joined.filter(F.col("data_merge_fields").isNull())
     only_in_data = joined.filter(F.col("backup_merge_fields").isNull())
