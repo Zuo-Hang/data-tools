@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         help="输出 HDFS 目录（若不指定，则自动将 input-dir 中的 'data_backup' 替换为 'data'）",
     )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=500,
+        help="抽样检查 merge_field 时的行数，默认 500",
+    )
     return parser.parse_args()
 
 
@@ -105,6 +111,23 @@ def rename_output_to_legacy_format(spark: SparkSession, output_dir: str) -> None
         fs.rename(Path(old_path), Path(new_path))
 
 
+def has_merge_field_in_line(line: str) -> bool:
+    """检查一行 JSON 的 fieldvalues 中是否包含以 merge_field<TAB> 开头的字符串。"""
+    if not line:
+        return False
+    try:
+        obj = json.loads(line)
+    except Exception:
+        return False
+    fv = obj.get("fieldvalues")
+    if not isinstance(fv, list):
+        return False
+    for v in fv:
+        if isinstance(v, str) and v.startswith("merge_field\t"):
+            return True
+    return False
+
+
 def filter_fieldvalues(line: str) -> str:
     """
     对一行 JSON 文本做处理：
@@ -154,6 +177,25 @@ def main() -> None:
     num_input_files = df.select("src_file").distinct().count()
     if num_input_files <= 0:
         num_input_files = 1
+
+    # 抽样检查是否存在 merge_field\t 字段
+    sample_rows = df.limit(args.sample_size).collect()
+    need_filter = any(
+        has_merge_field_in_line(row.value) for row in sample_rows
+    )
+    actual_sample_size = len(sample_rows)
+    if need_filter:
+        print(
+            f"[process_seq_order] 抽样检查: 抽样 {actual_sample_size} 行，发现 merge_field\\t 字段，执行过滤",
+            flush=True,
+        )
+    else:
+        print(
+            f"[process_seq_order] 抽样检查: 抽样 {actual_sample_size} 行，未发现 merge_field\\t 字段，直接结束",
+            flush=True,
+        )
+        spark.stop()
+        return
 
     # 2~3. 对每行 JSON 的 fieldvalues 做过滤 + 去重
     filter_udf = F.udf(filter_fieldvalues, StringType())

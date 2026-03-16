@@ -1,0 +1,60 @@
+列名,Unnamed: 1,含义,规则,处理
+estimate_bubble_id,,冒泡页对应每个厂商的唯一id,build_lines 中拼接。,"1、OCR 识别：{estimate_id}_{图片索引}_{品类索引}
+2、兜底：OCR 未识别时用 {estimate_id}_{图片索引}"
+estimate_id,,"冒泡页的唯一id, 跟bubble_image_url唯一对应",【问卷上传】,优先级：objId > _ObjectId > uuid1()
+city_id,,城市id,【问卷上传】,name2id 映射
+city_name,,城市名称,【问卷上传】,"1、主来源 data635
+2、兜底 province_city 取 split('-')[-1]
+3、data48 实验时强制长沙市
+4、city_map 统一为标准城市名"
+create_time,,创建时间 2021-02-02 11:11:11,OCR,"1、提取截图时间
+2、为空或与提交日期不一致时用 submit_time 覆盖"
+bubble_image_url,,冒泡页url,build_lines 中拼接,join(bubble_image_urls)
+est_distance,,预估里程,OCR,"1、匹配 (\d+\.?\d*)公里
+2、匹配时长费(\d+\.?\d*)分钟"
+est_duration,,预估到达时间,OCR,"1、起步时长从 est_distance 正则提取
+2、普通时长从时长费提取
+3、total_dur = 起步 + 普通
+4、为空时用该结果覆盖"
+est_pay,,预估价,OCR,"1、数字修正：牛→4, /→7, |→1, Q→9
+2、一口价→cap_price；预估/预付→est_pay；拼车→est_pay/other_price；优惠→reduce
+3、兜底 est_pay=price_value
+4、merge_supplier_bubbles 同品类取最低价"
+reduce_price,,优惠,OCR,"1、从含优惠关键词文本解析数字
+2、百度区间取右边界；est_pay 相同时保留 reduce_price 更大"
+dynamic_price,,动折,OCR,
+partner_name,,供应商,OCR,"1、白名单定义
+2、去掉末尾「外接版」
+3、dd 图片时 ride_platform_name 改为「滴滴」"
+car_type,,车型,OCR,品类+车型组成最终品类
+submit_time,,问卷提交的时间,【问卷上传】,"1、优先级 _id.timestamp > clientTime
+2、统一格式 %Y-%m-%d %H:%M:%S"
+cap_price,,一口价,OCR,"1、一口价判断：匹配 □价、一□、一价、口价等
+2、单值：(\d+(?:.\d+)?)\s*元 取第一个；区间：cap_price=min，max→other_price
+3、兜底：特价车等 cap_price 为空时用 est_pay 填充"
+start_poi,,冒泡起点poi预留,OD 提取,"1、黑名单过滤
+2、长度过滤
+3、换行合并
+4、OD 配置库相似度匹配"
+end_poi,,冒泡终点poi预留,OD 提取,"1、check_od_city 城市校验
+2、check_double_od 腾讯/百度时与 dd_end_poi 相似度>0.5
+3、check_double_client 图片传错校验"
+other_price,,其他价格_预留,OCR,"1、拼车：滴滴取拼成价 Y；高德/腾讯/百度取拼成价 X
+2、一口价区间：other_price=max，cap_price=min
+3、默勾：区间取 max，单值取 min"
+ride_platform_id,,平台ID_预留,【问卷上传】,activityName 解析，name2id 映射
+ride_platform_name,,平台名称_预留,问卷解析/替换,
+t_coin_reduce_price,都是NULL？,t3-T币优惠,,
+is_from_ocr_result,都是 False？,冒泡数据是否来源于打车聚合信息表,,
+submit_name,,提交人,【问卷上传】,data130/data670
+time_range,,时间段,【问卷上传】,data69/data31/data868/data48
+dis_range,,里程范围,【问卷上传】,data952/data256
+is_station,,问卷字段-是否场站，true:场站 false:非场站,【问卷上传】,
+station_name,BD空、DD + P1,问卷字段-场站名称,【问卷上传】,
+reduce_type,DD空？BD有,优惠类型,OCR+合并,匹配「惠」「限时特惠」「券」等
+extra_price,,附加费,OCR,匹配「含节假日服务费([\d.]+)元」
+data_check_status,,数据校验结果,OD 校验,
+district_type,,郊县类型,【问卷上传】,data691
+district_name,,郊县名称,【问卷上传】,data99
+dt,,分区健,【问卷上传】,取 origin_line.dt
+type,,类型,,
